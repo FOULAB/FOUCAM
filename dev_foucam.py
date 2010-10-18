@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from ctypes import *
+
 import os
 import sys
 
@@ -9,6 +11,9 @@ from pygame.locals import *
 import opencv 
 from opencv import highgui
 
+import time
+from multiprocessing import Process, Pool, Queue, Pipe
+
 try:
     import psyco
     psyco.full()
@@ -17,6 +22,29 @@ except ImportError:
 
 pygame.init()
 
+# some useful functions
+# convert the hue value to the corresponding rgb value
+def hsv2rgb ( hue ):
+    sector_data = [ [0, 2, 1],
+                    [1, 2, 0],
+                    [1, 0, 2],
+                    [2, 0, 1],
+                    [2, 1, 0],
+                    [0, 1, 2] ]
+    hue = hue * ( 0.1 / 3 )
+    sector = int( hue )
+    p = int( round ( 255 * ( hue - sector ) ) )
+    if sector & 1:
+        p ^= 255
+
+    rgb = {}
+    rgb [ sector_data [ sector ] [ 0 ] ] = 255
+    rgb [ sector_data [ sector ] [ 1 ] ] = 0
+    rgb [ sector_data [ sector ] [ 2 ] ] = p
+
+    return opencv.cv.Scalar (rgb [2], rgb [1], rgb [0], 0)
+
+
 
 class CameraInterface( object ):
  
@@ -24,15 +52,16 @@ class CameraInterface( object ):
         self._camHW = opencv.highgui.cvCreateCameraCapture(0)
         highgui.cvSetCaptureProperty( self._camHW, opencv.highgui.CV_CAP_PROP_FRAME_WIDTH, resolution[ 'WIDTH' ] )
         highgui.cvSetCaptureProperty( self._camHW, opencv.highgui.CV_CAP_PROP_FRAME_HEIGHT, resolution[ 'HEIGHT' ] )
-        highgui.cvSetCaptureProperty( self._camHW, opencv.highgui.CV_CAP_PROP_SATURATION, 0.0 )
+        #highgui.cvSetCaptureProperty( self._camHW, opencv.highgui.CV_CAP_PROP_SATURATION, 0.0 )
 
         self._iplFrame = None
 
     def __del__( self ):
-        highgui.cvSetCaptureProperty( self._camHW, highgui.CV_CAP_PROP_SATURATION, 1.0 )
+        #highgui.cvSetCaptureProperty( self._camHW, highgui.CV_CAP_PROP_SATURATION, 1.0 )
+        pass
 
-    def pollCamera( self ):
-        self._iplFrame = highgui.cvQueryFrame( self._cameraHW )
+    def nextFrame( self ):
+        self._iplFrame = highgui.cvQueryFrame( self._camHW )
         opencv.cv.cvMirror( self._iplFrame, None, 1 ) 
 
     def getFrameAsIpl( self ):
@@ -42,25 +71,23 @@ class CameraInterface( object ):
         return opencv.adaptors.Ipl2PIL( self._iplFrame )
 
     def getFrameAsPygame( self ):
-        image_PIL = self.getFrameAsPIL()
-        return pygame.image.frombuffer( image_PIL.tostring(), image_PIL.size, image_PIL.mode )
+        framePIL = self.getFrameAsPIL()
+        return pygame.image.frombuffer( framePIL.tostring(), framePIL.size, framePIL.mode )
     
 
 class FOUCAM( object ):
     
     def __init__( self, **argd ):
-        self._resolution = { 'WIDTH': 640,
-                             'HEIGHT': 480 }
-
-        self.__dict__.update( **argd )
-        super( FOUCAM, self ).__init__( **argd ) 
+        self._resolution = {}
+        self._resolution[ 'WIDTH' ]  = 640
+        self._resolution[ 'HEIGHT' ] = 480 
 
         self._camera = CameraInterface( self._resolution )
 
         pygame.display.set_mode( ( self._resolution['WIDTH'], self._resolution['HEIGHT'] ) )
         pygame.display.set_caption( "FOUCAM PIPELINE PROTOTYPE" )
         self._font = pygame.font.Font( None, 36 )
-        
+       
         self._screen = pygame.display.get_surface()
 
         self._background = pygame.Surface( self._screen.get_size() )
@@ -69,15 +96,22 @@ class FOUCAM( object ):
 
         self._trainedHaar = 'haarcascade_frontalface.xml'
        
+        self._currentFrame = None
+
+        self._blobs = []
         self._faces = []
 
     def __del__( self ):
         pass
 
     def pollCamera( self ):
-        self._camera.pollCamera()
+        self._camera.nextFrame()
+        #self._currentFrame = self._camera.getFrameAsIpl()
         #opencv.cvSmooth( img, img, opencv.CV_GAUSSIAN, 9, 9 )
         self._background.blit( self._camera.getFrameAsPygame(), (0, 0) )
+
+    def detectBlobs( self ):
+        self._blobs = []
 
     def detectFaces( self ):
         self._faces = []
